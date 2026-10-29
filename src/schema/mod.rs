@@ -225,6 +225,40 @@ const MIGRATIONS: &[Migration] = &[
                 ON device_inventory_snapshots (device_id, created_at DESC)
         "#],
     },
+    Migration {
+        version: "0004",
+        statements: &[
+            r#"
+            ALTER TABLE policies ALTER COLUMN version DROP NOT NULL
+            "#,
+            r#"
+            UPDATE policies SET version = NULL WHERE status = 'draft'
+            "#,
+            r#"
+            ALTER TABLE policies
+                ADD CONSTRAINT policies_signed_version_check
+                CHECK (status <> 'signed' OR version IS NOT NULL)
+            "#,
+            r#"
+            ALTER TABLE policies
+                ADD CONSTRAINT policies_draft_shape_check
+                CHECK (
+                    status <> 'draft'
+                    OR (
+                        version IS NULL
+                        AND signature_hex IS NULL
+                        AND server_key_id IS NULL
+                        AND signed_at IS NULL
+                    )
+                )
+            "#,
+            r#"
+            ALTER TABLE policies
+                ADD CONSTRAINT policies_version_positive_check
+                CHECK (version IS NULL OR version > 0)
+            "#,
+        ],
+    },
 ];
 
 #[cfg(test)]

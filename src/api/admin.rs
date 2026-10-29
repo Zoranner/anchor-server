@@ -22,7 +22,7 @@ use crate::{
     state::AppState,
 };
 
-use super::{device as device_api, error::ApiError, guard};
+use super::{device as device_api, error::ApiError, guard, pagination, pagination::Page};
 
 const SETUP_ADVISORY_LOCK_ID: i64 = 836_420_731_892;
 
@@ -97,12 +97,6 @@ pub struct DeviceListQuery {
     pub status: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Page<T> {
-    pub items: Vec<T>,
-    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -291,10 +285,7 @@ pub async fn list_devices(
     guard::require_admin(&state.db, &headers, false).await?;
     let Query(query) =
         query.map_err(|_| ApiError::bad_request("invalid device list query parameters"))?;
-    let limit = query.limit.unwrap_or(50);
-    if !(1..=100).contains(&limit) {
-        return Err(ApiError::bad_request("limit must be between 1 and 100"));
-    }
+    let limit = pagination::limit(query.limit)?;
     let status = query
         .status
         .as_deref()
@@ -306,7 +297,7 @@ pub async fn list_devices(
     let cursor = query
         .cursor
         .as_deref()
-        .map(parse_device_cursor)
+        .map(pagination::parse_cursor)
         .transpose()?;
 
     let mut select = device::Entity::find();
@@ -337,7 +328,9 @@ pub async fn list_devices(
         devices.truncate(limit as usize);
     }
     let next_cursor = if has_more {
-        devices.last().and_then(encode_device_cursor)
+        devices
+            .last()
+            .and_then(|device| pagination::encode_cursor(device.created_at, device.id))
     } else {
         None
     };
@@ -518,29 +511,6 @@ fn summarize_inventory(inventory: &HardwareInventory) -> InventorySummary {
         disk_count: inventory.disks.len(),
         network_adapter_count: inventory.network_adapters.len(),
     }
-}
-
-fn encode_device_cursor(device: &device::Model) -> Option<String> {
-    device
-        .created_at
-        .timestamp_nanos_opt()
-        .map(|value| format!("{value}:{}", device.id))
-}
-
-fn parse_device_cursor(value: &str) -> Result<(DateTime<Utc>, Uuid), ApiError> {
-    let (nanos, device_id) = value
-        .split_once(':')
-        .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
-    let nanos = nanos
-        .parse::<i64>()
-        .map_err(|_| ApiError::bad_request("invalid cursor"))?;
-    let seconds = nanos.div_euclid(1_000_000_000);
-    let subsec_nanos = nanos.rem_euclid(1_000_000_000) as u32;
-    let created_at = DateTime::from_timestamp(seconds, subsec_nanos)
-        .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
-    let device_id =
-        Uuid::parse_str(device_id).map_err(|_| ApiError::bad_request("invalid cursor"))?;
-    Ok((created_at, device_id))
 }
 
 fn prepare_signing_key(

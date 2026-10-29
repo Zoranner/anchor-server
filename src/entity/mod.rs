@@ -4,4 +4,6 @@ pub mod admin_session;
 pub mod admin_user;
 pub mod device;
 pub mod device_inventory_snapshot;
+pub mod policy;
+pub mod policy_assignment;
 pub mod signing_key;

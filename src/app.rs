@@ -8,7 +8,7 @@ use axum::{
 use serde_json::json;
 
 use crate::{
-    api::{admin, device, protocol},
+    api::{admin, device, policy, protocol},
     state::AppState,
 };
 
@@ -36,9 +36,31 @@ pub fn router(state: AppState) -> Router {
             "/api/admin/devices/{device_id}/reset-token",
             post(admin::reset_device_token),
         )
+        .route(
+            "/api/admin/policies",
+            get(policy::list_policies).post(policy::create_policy),
+        )
+        .route(
+            "/api/admin/policies/{policy_id}",
+            get(policy::policy_detail_endpoint),
+        )
+        .route(
+            "/api/admin/policies/{policy_id}/sign",
+            post(policy::sign_policy),
+        )
+        .route(
+            "/api/admin/policies/{policy_id}/assign",
+            post(policy::assign_policy),
+        )
+        .route(
+            "/api/admin/policies/{policy_id}/export",
+            get(policy::export_policy),
+        )
         .route("/api/device/register", post(device::register))
         .route("/api/device/status", get(device::status))
         .route("/api/device/heartbeat", post(device::heartbeat))
+        .route("/api/device/keyring", get(policy::device_keyring))
+        .route("/api/device/policy", get(policy::device_policy))
         .route_layer(middleware::from_fn(protocol::require_protocol));
 
     Router::new()

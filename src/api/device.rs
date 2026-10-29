@@ -86,7 +86,7 @@ pub async fn heartbeat(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn authenticate_device(
+pub(super) async fn authenticate_device(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<crate::entity::device::Model, ApiError> {
