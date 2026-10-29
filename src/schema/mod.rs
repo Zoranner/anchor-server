@@ -259,6 +259,22 @@ const MIGRATIONS: &[Migration] = &[
             "#,
         ],
     },
+    Migration {
+        version: "0005",
+        statements: &[
+            r#"
+            ALTER TABLE devices ADD COLUMN last_policy_version BIGINT
+            "#,
+            r#"
+            ALTER TABLE devices ADD COLUMN last_policy_fetched_at TIMESTAMPTZ
+            "#,
+            r#"
+            ALTER TABLE devices
+                ADD CONSTRAINT devices_last_policy_version_positive_check
+                CHECK (last_policy_version IS NULL OR last_policy_version > 0)
+            "#,
+        ],
+    },
 ];
 
 #[cfg(test)]

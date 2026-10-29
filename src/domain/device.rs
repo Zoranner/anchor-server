@@ -93,6 +93,8 @@ pub async fn register_device(
             created_at: Set(now),
             updated_at: Set(now),
             disabled_at: Set(None),
+            last_policy_version: Set(None),
+            last_policy_fetched_at: Set(None),
         }
         .insert(&tx)
         .await?;

@@ -257,6 +257,15 @@ pub async fn device_policy(
     match policy {
         Some(policy) => {
             let envelope = policy_domain::envelope(&policy).map_err(map_policy_error)?;
+            if let Err(error) =
+                policy_domain::record_policy_fetch(&state.db, device.id, envelope.version).await
+            {
+                tracing::warn!(
+                    %error,
+                    device_id = %device.id,
+                    "failed to record device policy fetch"
+                );
+            }
             Ok(Json(envelope).into_response())
         }
         None => Ok(StatusCode::NO_CONTENT.into_response()),

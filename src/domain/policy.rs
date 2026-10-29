@@ -5,6 +5,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr,
     EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, Statement, TransactionTrait,
 };
+use sea_query::Expr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -311,6 +312,29 @@ pub async fn policy_for_device(
         return Ok(None);
     }
     Ok(Some(policy))
+}
+
+/// 记录设备最近一次成功拉取到的策略；该记录用于管理台展示，不参与授权判断。
+pub async fn record_policy_fetch(
+    db: &DatabaseConnection,
+    device_id: Uuid,
+    version: u64,
+) -> Result<(), PolicyError> {
+    let version = i64::try_from(version)
+        .map_err(|_| PolicyError::Internal("policy version exceeds i64".into()))?;
+    device::Entity::update_many()
+        .col_expr(
+            device::Column::LastPolicyVersion,
+            Expr::value(Some(version)),
+        )
+        .col_expr(
+            device::Column::LastPolicyFetchedAt,
+            Expr::value(Some(Utc::now())),
+        )
+        .filter(device::Column::Id.eq(device_id))
+        .exec(db)
+        .await?;
+    Ok(())
 }
 
 pub fn envelope(policy: &policy::Model) -> Result<PolicyEnvelope, PolicyError> {

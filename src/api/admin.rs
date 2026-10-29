@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{self, IssuedSession},
-    domain::device as device_domain,
+    domain::{device as device_domain, policy as policy_domain},
     entity::{admin_user, device, device_inventory_snapshot, signing_key},
     keys::StoredSigningKey,
     state::AppState,
@@ -137,6 +137,16 @@ pub struct AdminDeviceDetail {
     pub inventory: Option<HardwareInventory>,
     pub inventory_captured_at: Option<DateTime<Utc>>,
     pub inventory_received_at: Option<DateTime<Utc>>,
+    pub effective_policy: Option<EffectivePolicyResponse>,
+    pub last_policy_version: Option<u64>,
+    pub last_policy_fetched_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EffectivePolicyResponse {
+    pub policy_id: Uuid,
+    pub version: u64,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -377,6 +387,19 @@ pub async fn device_detail(
     let inventory_captured_at = snapshot.as_ref().map(|value| value.captured_at);
     let inventory_received_at = snapshot.as_ref().map(|value| value.created_at);
     let status = device_domain::status_of(&device).map_err(device_api::map_device_error)?;
+    let effective_policy = match policy_domain::policy_for_device(&state.db, device.id).await {
+        Ok(Some(policy)) => policy.version.and_then(|version| {
+            u64::try_from(version)
+                .ok()
+                .map(|version| EffectivePolicyResponse {
+                    policy_id: policy.id,
+                    version,
+                    expires_at: policy.expires_at,
+                })
+        }),
+        Ok(None) => None,
+        Err(error) => return Err(ApiError::internal(error)),
+    };
 
     Ok(Json(AdminDeviceDetail {
         id: device.id,
@@ -391,6 +414,11 @@ pub async fn device_detail(
         inventory,
         inventory_captured_at,
         inventory_received_at,
+        effective_policy,
+        last_policy_version: device
+            .last_policy_version
+            .and_then(|version| u64::try_from(version).ok()),
+        last_policy_fetched_at: device.last_policy_fetched_at,
     }))
 }
 

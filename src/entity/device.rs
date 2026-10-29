@@ -17,6 +17,8 @@ pub struct Model {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub disabled_at: Option<DateTimeUtc>,
+    pub last_policy_version: Option<i64>,
+    pub last_policy_fetched_at: Option<DateTimeUtc>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
