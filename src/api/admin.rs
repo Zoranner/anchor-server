@@ -1,25 +1,28 @@
 use anchor_core::crypto;
+use anchor_protocol::{DeviceStatus, HardwareInventory};
 use axum::{
-    extract::{rejection::JsonRejection, State},
+    extract::{rejection::JsonRejection, rejection::QueryRejection, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::{DateTime, Utc};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::{self, AuthError, IssuedSession},
-    entity::{admin_user, signing_key},
+    auth::{self, IssuedSession},
+    domain::device as device_domain,
+    entity::{admin_user, device, device_inventory_snapshot, signing_key},
     keys::StoredSigningKey,
     state::AppState,
 };
 
-use super::error::ApiError;
+use super::{device as device_api, error::ApiError, guard};
 
 const SETUP_ADVISORY_LOCK_ID: i64 = 836_420_731_892;
 
@@ -87,6 +90,65 @@ pub struct AdminSessionResponse {
 pub struct AdminMeResponse {
     pub admin: AdminResponse,
     pub signing_key: Option<SigningKeyResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeviceListQuery {
+    pub status: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InventorySummary {
+    pub computer_model: String,
+    pub os_name: String,
+    pub os_version: String,
+    pub cpu_model: String,
+    pub memory_bytes: u64,
+    pub disk_count: usize,
+    pub network_adapter_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminDeviceSummary {
+    pub id: Uuid,
+    pub installation_id: Uuid,
+    pub hostname: String,
+    pub status: DeviceStatus,
+    pub client_version: Option<String>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub inventory_summary: Option<InventorySummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminDeviceDetail {
+    pub id: Uuid,
+    pub installation_id: Uuid,
+    pub hostname: String,
+    pub status: DeviceStatus,
+    pub client_version: Option<String>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub disabled_at: Option<DateTime<Utc>>,
+    pub inventory: Option<HardwareInventory>,
+    pub inventory_captured_at: Option<DateTime<Utc>>,
+    pub inventory_received_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeviceActionResponse {
+    pub id: Uuid,
+    pub status: DeviceStatus,
 }
 
 pub async fn setup(
@@ -192,10 +254,7 @@ pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let context = auth::authenticate(&state.db, &headers)
-        .await
-        .map_err(map_auth_error)?;
-    auth::validate_csrf(&headers, &context.session).map_err(map_auth_error)?;
+    let context = guard::require_admin(&state.db, &headers, true).await?;
     auth::revoke_session(&state.db, &context.session)
         .await
         .map_err(ApiError::internal)?;
@@ -211,9 +270,7 @@ pub async fn logout(
 }
 
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let context = auth::authenticate(&state.db, &headers)
-        .await
-        .map_err(map_auth_error)?;
+    let context = guard::require_admin(&state.db, &headers, false).await?;
     let key = current_signing_key(&state).await?;
     let mut response = Json(AdminMeResponse {
         admin: context.admin.into(),
@@ -224,6 +281,266 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
+}
+
+pub async fn list_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    query: Result<Query<DeviceListQuery>, QueryRejection>,
+) -> Result<Json<Page<AdminDeviceSummary>>, ApiError> {
+    guard::require_admin(&state.db, &headers, false).await?;
+    let Query(query) =
+        query.map_err(|_| ApiError::bad_request("invalid device list query parameters"))?;
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiError::bad_request("limit must be between 1 and 100"));
+    }
+    let status = query
+        .status
+        .as_deref()
+        .map(|value| {
+            DeviceStatus::parse(value)
+                .ok_or_else(|| ApiError::bad_request("unknown device status filter"))
+        })
+        .transpose()?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(parse_device_cursor)
+        .transpose()?;
+
+    let mut select = device::Entity::find();
+    if let Some(status) = status {
+        select = select.filter(device::Column::Status.eq(status.as_str()));
+    }
+    if let Some((created_at, id)) = cursor {
+        select = select.filter(
+            Condition::any()
+                .add(device::Column::CreatedAt.lt(created_at))
+                .add(
+                    Condition::all()
+                        .add(device::Column::CreatedAt.eq(created_at))
+                        .add(device::Column::Id.lt(id)),
+                ),
+        );
+    }
+
+    let mut devices = select
+        .order_by_desc(device::Column::CreatedAt)
+        .order_by_desc(device::Column::Id)
+        .limit(limit + 1)
+        .all(&state.db)
+        .await
+        .map_err(ApiError::internal)?;
+    let has_more = devices.len() > limit as usize;
+    if has_more {
+        devices.truncate(limit as usize);
+    }
+    let next_cursor = if has_more {
+        devices.last().and_then(encode_device_cursor)
+    } else {
+        None
+    };
+
+    let mut items = Vec::with_capacity(devices.len());
+    for device in devices {
+        let snapshot = latest_inventory_snapshot(&state, device.id).await?;
+        let status = device_domain::status_of(&device).map_err(device_api::map_device_error)?;
+        let inventory_summary = snapshot
+            .as_ref()
+            .map(inventory_from_snapshot)
+            .transpose()?
+            .map(|inventory| summarize_inventory(&inventory));
+        items.push(AdminDeviceSummary {
+            id: device.id,
+            installation_id: device.installation_id,
+            hostname: device.hostname,
+            status,
+            client_version: device.client_version,
+            last_seen_at: device.last_seen_at,
+            created_at: device.created_at,
+            approved_at: device.approved_at,
+            inventory_summary,
+        });
+    }
+
+    Ok(Json(Page { items, next_cursor }))
+}
+
+pub async fn device_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<AdminDeviceDetail>, ApiError> {
+    guard::require_admin(&state.db, &headers, false).await?;
+    let device_id = parse_device_id(&device_id)?;
+    let device = device::Entity::find_by_id(device_id)
+        .one(&state.db)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(device_not_found)?;
+    let snapshot = latest_inventory_snapshot(&state, device.id).await?;
+    let inventory = snapshot.as_ref().map(inventory_from_snapshot).transpose()?;
+    let inventory_captured_at = snapshot.as_ref().map(|value| value.captured_at);
+    let inventory_received_at = snapshot.as_ref().map(|value| value.created_at);
+    let status = device_domain::status_of(&device).map_err(device_api::map_device_error)?;
+
+    Ok(Json(AdminDeviceDetail {
+        id: device.id,
+        installation_id: device.installation_id,
+        hostname: device.hostname,
+        status,
+        client_version: device.client_version,
+        last_seen_at: device.last_seen_at,
+        created_at: device.created_at,
+        approved_at: device.approved_at,
+        disabled_at: device.disabled_at,
+        inventory,
+        inventory_captured_at,
+        inventory_received_at,
+    }))
+}
+
+pub async fn approve_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<DeviceActionResponse>, ApiError> {
+    let (context, device_id) = admin_device_action(&state, &headers, &device_id).await?;
+    device_domain::approve_device(&state.db, device_id, context.admin.id)
+        .await
+        .map_err(device_api::map_device_error)?;
+    Ok(Json(DeviceActionResponse {
+        id: device_id,
+        status: DeviceStatus::Active,
+    }))
+}
+
+pub async fn reject_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<DeviceActionResponse>, ApiError> {
+    let (_, device_id) = admin_device_action(&state, &headers, &device_id).await?;
+    device_domain::reject_device(&state.db, device_id)
+        .await
+        .map_err(device_api::map_device_error)?;
+    Ok(Json(DeviceActionResponse {
+        id: device_id,
+        status: DeviceStatus::Rejected,
+    }))
+}
+
+pub async fn disable_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<DeviceActionResponse>, ApiError> {
+    let (_, device_id) = admin_device_action(&state, &headers, &device_id).await?;
+    device_domain::disable_device(&state.db, device_id)
+        .await
+        .map_err(device_api::map_device_error)?;
+    Ok(Json(DeviceActionResponse {
+        id: device_id,
+        status: DeviceStatus::Disabled,
+    }))
+}
+
+pub async fn reset_device_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<DeviceActionResponse>, ApiError> {
+    let (_, device_id) = admin_device_action(&state, &headers, &device_id).await?;
+    device_domain::reset_device_token(&state.db, device_id)
+        .await
+        .map_err(device_api::map_device_error)?;
+    Ok(Json(DeviceActionResponse {
+        id: device_id,
+        status: DeviceStatus::Pending,
+    }))
+}
+
+async fn admin_device_action(
+    state: &AppState,
+    headers: &HeaderMap,
+    device_id: &str,
+) -> Result<(crate::auth::AuthContext, Uuid), ApiError> {
+    let context = guard::require_admin(&state.db, headers, true).await?;
+    let device_id = parse_device_id(device_id)?;
+    Ok((context, device_id))
+}
+
+fn parse_device_id(value: &str) -> Result<Uuid, ApiError> {
+    Uuid::parse_str(value).map_err(|_| ApiError::bad_request("device_id must be a UUID"))
+}
+
+fn device_not_found() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "device_not_found",
+        "device was not found",
+    )
+}
+
+async fn latest_inventory_snapshot(
+    state: &AppState,
+    device_id: Uuid,
+) -> Result<Option<device_inventory_snapshot::Model>, ApiError> {
+    device_inventory_snapshot::Entity::find()
+        .filter(device_inventory_snapshot::Column::DeviceId.eq(device_id))
+        .order_by_desc(device_inventory_snapshot::Column::CreatedAt)
+        .order_by_desc(device_inventory_snapshot::Column::Id)
+        .one(&state.db)
+        .await
+        .map_err(ApiError::internal)
+}
+
+fn inventory_from_snapshot(
+    snapshot: &device_inventory_snapshot::Model,
+) -> Result<HardwareInventory, ApiError> {
+    serde_json::from_value(snapshot.inventory_json.clone())
+        .map_err(|error| ApiError::internal(format!("decode hardware inventory: {error}")))
+}
+
+fn summarize_inventory(inventory: &HardwareInventory) -> InventorySummary {
+    InventorySummary {
+        computer_model: inventory.computer.model.clone(),
+        os_name: inventory.operating_system.name.clone(),
+        os_version: inventory.operating_system.version.clone(),
+        cpu_model: inventory.cpu.model.clone(),
+        memory_bytes: inventory
+            .memory_modules
+            .iter()
+            .fold(0_u64, |total, module| {
+                total.saturating_add(module.capacity_bytes)
+            }),
+        disk_count: inventory.disks.len(),
+        network_adapter_count: inventory.network_adapters.len(),
+    }
+}
+
+fn encode_device_cursor(device: &device::Model) -> Option<String> {
+    device
+        .created_at
+        .timestamp_nanos_opt()
+        .map(|value| format!("{value}:{}", device.id))
+}
+
+fn parse_device_cursor(value: &str) -> Result<(DateTime<Utc>, Uuid), ApiError> {
+    let (nanos, device_id) = value
+        .split_once(':')
+        .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
+    let nanos = nanos
+        .parse::<i64>()
+        .map_err(|_| ApiError::bad_request("invalid cursor"))?;
+    let seconds = nanos.div_euclid(1_000_000_000);
+    let subsec_nanos = nanos.rem_euclid(1_000_000_000) as u32;
+    let created_at = DateTime::from_timestamp(seconds, subsec_nanos)
+        .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
+    let device_id =
+        Uuid::parse_str(device_id).map_err(|_| ApiError::bad_request("invalid cursor"))?;
+    Ok((created_at, device_id))
 }
 
 fn prepare_signing_key(
@@ -391,21 +708,6 @@ fn invalid_credentials() -> ApiError {
         "invalid_credentials",
         "invalid username or password",
     )
-}
-
-fn map_auth_error(error: AuthError) -> ApiError {
-    match error {
-        AuthError::MissingSession
-        | AuthError::InvalidSession
-        | AuthError::ExpiredSession
-        | AuthError::DisabledAdmin => ApiError::unauthorized("authentication required"),
-        AuthError::MissingCsrf | AuthError::InvalidCsrf => ApiError::new(
-            StatusCode::FORBIDDEN,
-            "csrf_invalid",
-            "CSRF token is invalid",
-        ),
-        AuthError::Database(error) => ApiError::internal(error),
-    }
 }
 
 #[cfg(test)]

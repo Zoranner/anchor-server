@@ -218,6 +218,13 @@ const MIGRATIONS: &[Migration] = &[
             "#,
         ],
     },
+    Migration {
+        version: "0003",
+        statements: &[r#"
+            CREATE INDEX IF NOT EXISTS device_inventory_snapshots_device_created_idx
+                ON device_inventory_snapshots (device_id, created_at DESC)
+        "#],
+    },
 ];
 
 #[cfg(test)]

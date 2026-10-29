@@ -11,6 +11,7 @@ pub struct Config {
     pub listen_addr: String,
     pub public_url: String,
     pub setup_token: Option<String>,
+    pub trust_proxy_headers: bool,
 }
 
 impl fmt::Debug for Config {
@@ -31,6 +32,7 @@ impl fmt::Debug for Config {
                     "unset"
                 },
             )
+            .field("trust_proxy_headers", &self.trust_proxy_headers)
             .finish()
     }
 }
@@ -63,6 +65,7 @@ impl Config {
             }
             _ => None,
         };
+        let trust_proxy_headers = parse_bool_env("ANCHOR_TRUST_PROXY_HEADERS", false)?;
 
         Ok(Self {
             database_url,
@@ -78,6 +81,18 @@ impl Config {
             public_url: std::env::var("ANCHOR_PUBLIC_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8080".into()),
             setup_token,
+            trust_proxy_headers,
         })
+    }
+}
+
+fn parse_bool_env(name: &str, default: bool) -> anyhow::Result<bool> {
+    match std::env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => bail!("{name} must be true, false, 1 or 0"),
+        },
+        Err(_) => Ok(default),
     }
 }

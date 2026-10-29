@@ -3,16 +3,18 @@ mod app;
 mod auth;
 mod config;
 mod database;
+mod domain;
 mod entity;
 mod keys;
+mod rate_limit;
 mod schema;
 mod state;
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use tracing::info;
 
-use crate::{keys::MasterKey, keys::SigningKeyStore, state::AppState};
+use crate::{keys::MasterKey, keys::SigningKeyStore, rate_limit::RequestLimiter, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,11 +39,16 @@ async fn main() -> anyhow::Result<()> {
         db,
         config: Arc::new(config),
         signing_keys,
+        registration_limiter: Arc::new(RequestLimiter::default()),
     };
     let app = app::router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     info!(address = %listen_addr, "anchor-server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
