@@ -25,6 +25,7 @@ const { theme, toggleTheme } = useTheme()
 const navigationItems = [
   { to: '/devices', label: '设备', icon: 'ph:desktop-tower' },
   { to: '/policies', label: '策略', icon: 'ph:shield-check' },
+  { to: '/settings', label: '密钥', icon: 'ph:key' },
 ]
 
 const busy = computed(() => pending.value > 0)

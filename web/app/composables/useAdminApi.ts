@@ -14,6 +14,7 @@ import type {
   PolicyDraftRequest,
   PolicyStatus,
   PolicySummary,
+  RotateSigningKeyResponse,
   SigningKey,
 } from '~/types/admin'
 
@@ -215,6 +216,18 @@ export function useAdminApi() {
     }
   }
 
+  async function rotateSigningKey(): Promise<RotateSigningKeyResponse> {
+    const response = await adminFetch<RotateSigningKeyResponse>(
+      '/api/admin/signing-keys/rotate',
+      { method: 'POST' },
+    )
+    state.value = {
+      ...state.value,
+      signingKey: response.signing_key,
+    }
+    return response
+  }
+
   async function loadDevices(
     status: DeviceStatus | null,
     cursor: string | null = null,
@@ -350,6 +363,7 @@ export function useAdminApi() {
     login,
     setup,
     logout,
+    rotateSigningKey,
     loadDevices,
     loadDevice,
     deviceAction,

@@ -26,6 +26,11 @@ export interface AdminSessionResponse extends AdminMeResponse {
   expires_at: string
 }
 
+export interface RotateSigningKeyResponse {
+  retired_key_id: string
+  signing_key: SigningKey
+}
+
 export interface ApiPage<T> {
   items: T[]
   next_cursor: string | null

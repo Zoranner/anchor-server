@@ -22,6 +22,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/login", post(admin::login))
         .route("/api/admin/logout", post(admin::logout))
         .route("/api/admin/me", get(admin::me))
+        .route(
+            "/api/admin/signing-keys/rotate",
+            post(admin::rotate_signing_key),
+        )
         .route("/api/admin/devices", get(admin::list_devices))
         .route("/api/admin/devices/{device_id}", get(admin::device_detail))
         .route(

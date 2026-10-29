@@ -92,6 +92,12 @@ pub struct AdminMeResponse {
     pub signing_key: Option<SigningKeyResponse>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RotateSigningKeyResponse {
+    pub retired_key_id: String,
+    pub signing_key: SigningKeyResponse,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeviceListQuery {
     pub status: Option<String>,
@@ -285,6 +291,39 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
+}
+
+pub async fn rotate_signing_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RotateSigningKeyResponse>, ApiError> {
+    let context = guard::require_admin(&state.db, &headers, true).await?;
+    let stored_key = prepare_signing_key(&state, None)?;
+    match persist_rotation(&state, context.admin.id, &stored_key).await {
+        Ok((retired, active)) => Ok(Json(RotateSigningKeyResponse {
+            retired_key_id: retired.key_id,
+            signing_key: active.into(),
+        })),
+        Err(RotationPersistFailure::SafeToRemove(error)) => {
+            if stored_key.created_file {
+                if let Err(remove_error) = state.signing_keys.remove_file(&stored_key.key_id) {
+                    tracing::error!(
+                        error = %remove_error,
+                        key_id = %stored_key.key_id,
+                        "failed to remove unused rotated signing key file"
+                    );
+                }
+            }
+            Err(error)
+        }
+        Err(RotationPersistFailure::CommitUncertain(error)) => {
+            tracing::error!(
+                key_id = %stored_key.key_id,
+                "signing key rotation commit result is uncertain; keeping encrypted key file"
+            );
+            Err(error)
+        }
+    }
 }
 
 pub async fn list_devices(
@@ -595,6 +634,11 @@ enum SetupPersistFailure {
     CommitUncertain(ApiError),
 }
 
+enum RotationPersistFailure {
+    SafeToRemove(ApiError),
+    CommitUncertain(ApiError),
+}
+
 async fn persist_setup_inner(
     state: &AppState,
     username: &str,
@@ -671,6 +715,90 @@ async fn persist_setup_inner(
         .await
         .map_err(|error| SetupPersistFailure::CommitUncertain(ApiError::internal(error)))?;
     Ok((admin, key))
+}
+
+async fn persist_rotation(
+    state: &AppState,
+    admin_id: Uuid,
+    stored_key: &StoredSigningKey,
+) -> Result<(signing_key::Model, signing_key::Model), RotationPersistFailure> {
+    let tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| RotationPersistFailure::SafeToRemove(ApiError::internal(error)))?;
+    if let Err(error) = tx
+        .execute_unprepared(&format!(
+            "SELECT pg_advisory_xact_lock({SETUP_ADVISORY_LOCK_ID})"
+        ))
+        .await
+    {
+        let _ = tx.rollback().await;
+        return Err(RotationPersistFailure::SafeToRemove(ApiError::internal(
+            error,
+        )));
+    }
+
+    let active = match signing_key::Entity::find()
+        .filter(signing_key::Column::Status.eq("active"))
+        .lock_exclusive()
+        .one(&tx)
+        .await
+    {
+        Ok(Some(active)) => active,
+        Ok(None) => {
+            let _ = tx.rollback().await;
+            return Err(RotationPersistFailure::SafeToRemove(ApiError::conflict(
+                "signing_key_unavailable",
+                "no active signing key is available",
+            )));
+        }
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return Err(RotationPersistFailure::SafeToRemove(ApiError::internal(
+                error,
+            )));
+        }
+    };
+
+    let now = chrono::Utc::now();
+    let mut retired_active: signing_key::ActiveModel = active.into();
+    retired_active.status = Set("retired".into());
+    retired_active.retired_at = Set(Some(now));
+    let retired = match retired_active.update(&tx).await {
+        Ok(retired) => retired,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return Err(RotationPersistFailure::SafeToRemove(ApiError::internal(
+                error,
+            )));
+        }
+    };
+
+    let new_key = signing_key::ActiveModel {
+        key_id: Set(stored_key.key_id.clone()),
+        public_key_hex: Set(stored_key.public_key_hex.clone()),
+        status: Set("active".into()),
+        created_by_admin_id: Set(admin_id),
+        created_at: Set(now),
+        activated_at: Set(now),
+        retired_at: Set(None),
+        revoked_at: Set(None),
+    };
+    let active = match new_key.insert(&tx).await {
+        Ok(active) => active,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return Err(RotationPersistFailure::SafeToRemove(ApiError::internal(
+                error,
+            )));
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| RotationPersistFailure::CommitUncertain(ApiError::internal(error)))?;
+    Ok((retired, active))
 }
 
 async fn current_signing_key(state: &AppState) -> Result<Option<signing_key::Model>, ApiError> {
