@@ -1,0 +1,39 @@
+services:
+  anchor-server:
+    image: ghcr.io/zoranner/anchor-server:0.1.2
+    container_name: anchor-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./app/config:/app/config:ro
+      - ./app/data:/app/data
+      - ./app/secrets/anchor_master_key:/run/secrets/anchor_master_key:ro
+
+  postgres:
+    image: postgres:16
+    container_name: anchor-postgres
+    restart: always
+    stop_signal: SIGINT
+    environment:
+      - POSTGRES_DB=anchor
+      - POSTGRES_USER=anchor
+      - POSTGRES_PASSWORD=anchor
+    healthcheck:
+      test: ["CMD-SHELL", "sh -c 'pg_isready -U anchor -d anchor'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
+networks:
+  default:
+    external: true
+    name: anchor
