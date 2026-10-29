@@ -163,6 +163,7 @@ pub async fn heartbeat(
     device: &device::Model,
     client_version: &str,
     inventory_hash: &str,
+    inventory: Option<&HardwareInventory>,
 ) -> Result<(), DeviceError> {
     ensure_active(device)?;
     let client_version = validate_text(client_version, "client_version", 64)?;
@@ -183,7 +184,21 @@ pub async fn heartbeat(
         .await?
         .map(|snapshot| snapshot.inventory_hash);
     if latest_hash.as_deref() != Some(provided_hash.as_slice()) {
-        return Err(DeviceError::InventoryChanged);
+        let Some(inventory) = inventory else {
+            return Err(DeviceError::InventoryChanged);
+        };
+        if inventory.schema_version != HARDWARE_INVENTORY_SCHEMA_VERSION {
+            return Err(DeviceError::InvalidRequest(
+                "unsupported hardware inventory schema_version".into(),
+            ));
+        }
+        let prepared = PreparedInventory::new(inventory)?;
+        if prepared.hash != provided_hash {
+            return Err(DeviceError::InvalidRequest(
+                "inventory_hash does not match the submitted inventory".into(),
+            ));
+        }
+        prepared.insert(db, device.id, Utc::now()).await?;
     }
 
     let now = Utc::now();

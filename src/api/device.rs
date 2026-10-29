@@ -80,6 +80,7 @@ pub async fn heartbeat(
         &device,
         &request.client_version,
         &request.inventory_hash,
+        request.inventory.as_ref(),
     )
     .await
     .map_err(map_device_error)?;
