@@ -6,15 +6,29 @@ license.workspace = true
 description = "Anchor Guard 服务端 API"
 
 [dependencies]
+aes-gcm = "0.10"
 anchor-core.workspace = true
 anchor-protocol.workspace = true
 anyhow.workspace = true
+argon2 = "0.5"
 axum = "0.8"
 chrono.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+hkdf = "0.12"
+rand.workspace = true
 sea-orm = { version = "2.0.2", features = ["macros", "runtime-tokio-rustls", "sqlx-postgres"] }
 sea-query = "1.0.2"
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile.workspace = true
