@@ -1,18 +1,22 @@
+use std::path::PathBuf;
+
 use axum::{
     extract::State,
     http::StatusCode,
     middleware,
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use serde_json::json;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
-    api::{admin, device, policy, protocol},
+    api::{admin, device, error::ApiError, policy, protocol},
     state::AppState,
 };
 
 pub fn router(state: AppState) -> Router {
+    let web = web_service(state.config.web_dir.clone());
     let api = Router::new()
         .route("/api/admin/setup", post(admin::setup))
         .route("/api/admin/login", post(admin::login))
@@ -67,7 +71,23 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
         .merge(api)
+        .route("/api", any(api_not_found))
+        .route("/api/{*rest}", any(api_not_found))
+        .fallback_service(web)
         .with_state(state)
+}
+
+fn web_service(web_dir: PathBuf) -> ServeDir<ServeFile> {
+    let index_file = web_dir.join("index.html");
+    ServeDir::new(web_dir).fallback(ServeFile::new(index_file))
+}
+
+async fn api_not_found() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "not_found",
+        "API endpoint was not found",
+    )
 }
 
 async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
@@ -80,5 +100,63 @@ async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<serde_json:
                 Json(json!({ "status": "unavailable" })),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn web_fallback_serves_index_for_spa_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index.html"), "spa-index").unwrap();
+
+        let response = web_service(directory.path().to_path_buf())
+            .oneshot(
+                Request::builder()
+                    .uri("/devices")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(Body::new(response.into_body()), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"spa-index");
+    }
+
+    #[tokio::test]
+    async fn web_service_serves_existing_assets() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index.html"), "spa-index").unwrap();
+        fs::write(directory.path().join("app.js"), "console.log('ok')").unwrap();
+
+        let response = web_service(directory.path().to_path_buf())
+            .oneshot(
+                Request::builder()
+                    .uri("/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(Body::new(response.into_body()), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"console.log('ok')");
     }
 }

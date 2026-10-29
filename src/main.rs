@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir = %config.data_dir.display(),
         master_key_file = %config.master_key_file.display(),
         public_url = %config.public_url,
+        web_dir = %config.web_dir.display(),
         "anchor-server configuration loaded"
     );
     let db = database::connect(&config).await?;

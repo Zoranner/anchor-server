@@ -10,6 +10,7 @@ pub struct Config {
     pub master_key_file: PathBuf,
     pub listen_addr: String,
     pub public_url: String,
+    pub web_dir: PathBuf,
     pub setup_token: Option<String>,
     pub trust_proxy_headers: bool,
 }
@@ -24,6 +25,7 @@ impl fmt::Debug for Config {
             .field("master_key_file", &self.master_key_file)
             .field("listen_addr", &self.listen_addr)
             .field("public_url", &self.public_url)
+            .field("web_dir", &self.web_dir)
             .field(
                 "setup_token",
                 &if self.setup_token.is_some() {
@@ -80,6 +82,9 @@ impl Config {
                 .unwrap_or_else(|_| "0.0.0.0:8080".into()),
             public_url: std::env::var("ANCHOR_PUBLIC_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8080".into()),
+            web_dir: std::env::var_os("ANCHOR_WEB_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./web")),
             setup_token,
             trust_proxy_headers,
         })

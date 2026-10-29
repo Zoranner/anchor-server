@@ -1,0 +1,29 @@
+@import 'tailwindcss';
+
+/*
+ * @stellar/ui 的 NavBar 导航区使用 `hidden md:flex`。应用源码里的 `hidden`
+ * 文本会让 tailwind 生成基础类 `.hidden`，它排在组件库样式之后会盖掉库内的
+ * `md:flex`；这里显式生成同一个工具类，让组件库的响应式组合按原意工作。
+ */
+@source inline("md:flex");
+
+:root {
+  font-family: var(--font-family-sans);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+  min-width: 320px;
+}
+
+body {
+  margin: 0;
+  background: var(--st-bg-base);
+  color: var(--st-text-primary);
+}
