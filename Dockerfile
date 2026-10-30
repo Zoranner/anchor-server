@@ -15,7 +15,6 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY client ./client
-COPY admin ./admin
 COPY server ./server
 
 RUN cargo build --release --locked -p anchor-server
