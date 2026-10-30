@@ -12,12 +12,10 @@ FROM rust:1.98-bookworm AS builder
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY client ./client
 COPY server ./server
 
-RUN cargo build --release --locked -p anchor-server
+RUN cargo build --release --locked --manifest-path server/Cargo.toml -p anchor-server
 
 FROM debian:bookworm-slim
 
@@ -27,7 +25,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/anchor-server /usr/local/bin/anchor-server
+COPY --from=builder /app/server/target/release/anchor-server /usr/local/bin/anchor-server
 COPY --from=web-builder /web/.output/public /app/web
 
 EXPOSE 8080
