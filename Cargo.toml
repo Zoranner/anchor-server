@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["crates/shared"]
 
 [workspace.package]
 version = "0.1.2"
@@ -7,8 +8,8 @@ edition = "2021"
 license = "Proprietary"
 
 [workspace.dependencies]
-anchor-core = { path = "../crates/anchor-core" }
-anchor-protocol = { path = "../crates/anchor-protocol" }
+anchor-core = { path = "crates/shared/anchor-core" }
+anchor-protocol = { path = "crates/shared/anchor-protocol" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }

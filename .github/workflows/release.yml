@@ -1,0 +1,126 @@
+name: Release Anchor Server
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: anchor-server-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify-server:
+    name: Verify Server
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: Verify server Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features
+
+  verify-web:
+    name: Verify Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        working-directory: web
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Verify frontend
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run typecheck
+          bun run lint
+          bun run format:check
+          bun test
+
+  prepare:
+    name: Prepare Release
+    needs: [verify-server, verify-web]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - id: version
+        name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          server_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          test "$tag_version" = "$server_version"
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
+  build-server:
+    name: Build Server Image
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/zoranner/anchor-server:${{ needs.prepare.outputs.version }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Publish Release
+    needs: [prepare, build-server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Anchor Server ${{ needs.prepare.outputs.version }}
+          body: |
+            Server image: ghcr.io/zoranner/anchor-server:${{ needs.prepare.outputs.version }}
+          generate_release_notes: true

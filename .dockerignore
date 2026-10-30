@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+target
+**/target
+web/node_modules
+web/.nuxt
+web/.output
+deploy/.env
+deploy/app
+deploy/data
+**/.env
